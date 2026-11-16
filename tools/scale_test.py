@@ -263,7 +263,14 @@ def main(argv: list[str] | None = None) -> int:
             with torch.no_grad():
                 for name, param in canonical_params(model).items():
                     param.copy_(torch.from_numpy(weights[name]).to(param.device, param.dtype))
-            loss = None
+            # The coordinator applies the step, so the arm has no local loss unless
+            # it scores the batch it just used. Without this the DUST arm logs no
+            # train loss at all (`recent` stays empty and the per-step record is
+            # suppressed), which silently produced an empty jsonl for a whole run.
+            with torch.no_grad():
+                logits = model(idx)
+                loss = float(torch.nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.shape[-1]).float(), tgt.reshape(-1)))
             upload_bytes = len(body)
             extra = {"gradNorm": receipt.get("gradNorm"), "uploadBytes": upload_bytes,
                      "declaredNorm": receipt.get("declaredNorm"),
