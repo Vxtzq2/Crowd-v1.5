@@ -45,6 +45,14 @@ class DustConfig:
     grad_clip: float = 0.0
     warmup_steps: int = 0
     mode: str = "layer"       # "layer" isolates each layer (paper); "all" is one pass
+    # Where the perturbation noise is *generated*. "cpu" makes a draw bit-identical
+    # on every device, which is what lets a coordinator re-score a client's member
+    # from (base_seed, step, draw) alone. "device" generates on the accelerator
+    # instead, which is the only way a 300M step is affordable: one draw of
+    # (rows x seq x 240,640) noise costs ~7 s of CPU randn versus ~0.3 s on a
+    # 4060 Ti, i.e. 98 % of the step. "device" forfeits cross-device bit-equality;
+    # the round record names which mode produced the estimate.
+    noise_device: str = "cpu"
 
     def __post_init__(self) -> None:
         if self.population <= 0:
@@ -61,6 +69,8 @@ class DustConfig:
             raise ValueError("draw_chunk must be positive")
         if self.mode not in ("layer", "all"):
             raise ValueError('mode must be "layer" or "all"')
+        if self.noise_device not in ("cpu", "device"):
+            raise ValueError('noise_device must be "cpu" or "device"')
 
 
 def derive_seed(base_seed: int, step: int, draw: int, name: str) -> int:
@@ -73,22 +83,29 @@ def derive_seed(base_seed: int, step: int, draw: int, name: str) -> int:
 
 def _draw_one(name: str, out_features: int, rows: int, seq_len: int, *,
               base_seed: int, step: int, draw: int,
-              device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    """One layer's noise, generated on CPU so every device agrees bit for bit."""
-    gen = torch.Generator(device="cpu").manual_seed(derive_seed(base_seed, step, draw, name))
-    noise = torch.randn((rows, seq_len, out_features), generator=gen)
-    return noise.to(device=device, dtype=dtype)
+              device: torch.device, dtype: torch.dtype,
+              noise_device: str = "cpu") -> torch.Tensor:
+    """One layer's noise; CPU generation keeps every device bit-identical."""
+    where = "cpu" if noise_device == "cpu" else device
+    gen = torch.Generator(device=where).manual_seed(derive_seed(base_seed, step, draw, name))
+    noise = torch.randn((rows, seq_len, out_features), generator=gen,
+                        device=where, dtype=torch.float32)
+    if where == "cpu":
+        return noise.to(device=device, dtype=dtype)
+    return noise.to(dtype=dtype)
 
 
 def draw_noise(shapes: dict[str, int], *, rows: int, seq_len: int,
                base_seed: int, step: int, draws: list[int],
-               device: torch.device, dtype: torch.dtype) -> dict[str, torch.Tensor]:
+               device: torch.device, dtype: torch.dtype,
+               noise_device: str = "cpu") -> dict[str, torch.Tensor]:
     """Batched noise for ``draws``: each layer's tensor is ``(len(draws)*rows, T, out)``."""
     batched: dict[str, torch.Tensor] = {}
     for name, out_features in shapes.items():
         parts = [
             _draw_one(name, out_features, rows, seq_len, base_seed=base_seed,
-                      step=step, draw=draw, device=device, dtype=dtype)
+                      step=step, draw=draw, device=device, dtype=dtype,
+                      noise_device=noise_device)
             for draw in draws
         ]
         batched[name] = torch.cat(parts, dim=0) if len(parts) > 1 else parts[0]
@@ -203,6 +220,7 @@ def dust_gradients(model: GPT, cfg: DustConfig, idx: torch.Tensor, tgt: torch.Te
             default_scale = cfg.sigma * total_tokens
             for _label, only, targets in per_pass:
                 noise = draw_noise(targets, rows=b, seq_len=t, base_seed=base_seed,
+                                   noise_device=cfg.noise_device,
                                    step=step, draws=draws, device=device, dtype=dtype)
                 plus = model(idx_rep, Perturb(enabled=True, sigma=sigma_map, sign=1,
                                               noise=noise, only=only))
@@ -236,6 +254,7 @@ def dust_gradients(model: GPT, cfg: DustConfig, idx: torch.Tensor, tgt: torch.Te
         "tokens": total_tokens,
         "forwards": math.ceil(cfg.population / cfg.draw_chunk) * (1 + 2 * len(per_pass)),
         "sigma": (min(sigmas.values()) if sigmas else cfg.sigma),
+        "noiseDevice": cfg.noise_device,
         "sigmaMode": cfg.sigma_mode,
         "sigmaRel": cfg.sigma_rel if sigmas else None,
         "sigmaMax": (max(sigmas.values()) if sigmas else cfg.sigma),

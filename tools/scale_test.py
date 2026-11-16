@@ -105,6 +105,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sigma-rel", type=float, default=0.05)
     parser.add_argument("--gamma", type=float, default=0.9)
     parser.add_argument("--mode", choices=("layer", "all"), default="layer")
+    parser.add_argument("--noise-device", choices=("cpu", "device"), default="cpu",
+                        help="generate the perturbation noise on the accelerator (fast, device-specific)"
+                             " or on the CPU (slow, bit-identical on every device)")
     parser.add_argument("--outer-lr", type=float, default=0.7)
     parser.add_argument("--outer-momentum", type=float, default=0.9)
     parser.add_argument("--max-abs-grad", type=float, default=1.0)
@@ -176,7 +179,8 @@ def main(argv: list[str] | None = None) -> int:
             coord._persist()
         dust_cfg = DustConfig(population=args.population, draw_chunk=args.draw_chunk,
                               sigma=args.sigma, sigma_mode=args.sigma_mode,
-                              sigma_rel=args.sigma_rel, gamma=args.gamma, mode=args.mode)
+                              sigma_rel=args.sigma_rel, gamma=args.gamma, mode=args.mode,
+                              noise_device=args.noise_device)
     else:
         optimizer = torch.optim.AdamW(list(params.values()), lr=args.adam_lr,
                                       betas=(0.9, 0.95), weight_decay=0.01)
@@ -191,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         "arm": args.arm, "preset": args.preset, "params": n_params,
         "device": str(device), "computeDtype": args.compute_dtype,
         "batch": args.batch, "seqLen": args.seq_len,
+        "noiseDevice": args.noise_device,
         "population": args.population if args.arm == "dust" else None,
         "drawChunk": args.draw_chunk if args.arm == "dust" else None,
         "sigma": args.sigma if args.arm == "dust" else None,
