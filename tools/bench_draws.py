@@ -59,15 +59,32 @@ def cosine_arm(model_cfg, cfg, draws, *, seed, batch, seq_len, task):
     grads, _stats = averaged_draws(model, cfg, idx, tgt, base_seed=seed, draws=draws)
     seconds = time.perf_counter() - started
     reference = backprop_gradients(model, idx, tgt)
-    a, b = [], []
+    head_key = None
     for name in sorted(grads):
-        a.append(np.asarray(grads[name], dtype=np.float64).reshape(-1))
-        b.append(np.asarray(reference[name], dtype=np.float64).reshape(-1))
-    a = np.concatenate(a)
-    b = np.concatenate(b)
-    cosine = float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-30))
-    return {"draws": draws, "cosine": round(cosine, 6), "seconds": round(seconds, 2),
-            "gradNorm": round(float(np.linalg.norm(a)), 3)}
+        if name.endswith("emb.weight"):
+            head_key = name
+            break
+
+    def _cat(names_):
+        left = np.concatenate([np.asarray(grads[n], dtype=np.float64).reshape(-1) for n in names_])
+        right = np.concatenate([np.asarray(reference[n], dtype=np.float64).reshape(-1) for n in names_])
+        norm = np.linalg.norm(left) * np.linalg.norm(right)
+        return float(left @ right / (norm + 1e-30))
+
+    names = sorted(grads)
+    body = [n for n in names if n != head_key]
+    by_type = {}
+    for kind, pred in (("attn", lambda n: ".attn." in n),
+                       ("mlp", lambda n: ".mlp." in n),
+                       ("embedding", lambda n: n == head_key)):
+        subset = [n for n in names if pred(n)]
+        if subset:
+            by_type[kind] = round(_cat(subset), 6)
+    return {"draws": draws, "cosine": round(_cat(names), 6),
+            "cosineNoHead": round(_cat(body), 6) if body else None,
+            "byType": by_type, "seconds": round(seconds, 2),
+            "gradNorm": round(float(np.linalg.norm(np.concatenate(
+                [np.asarray(grads[n], dtype=np.float64).reshape(-1) for n in names]))), 3)}
 
 
 def loss_arm(model_cfg, cfg, draws, *, rounds, lr, outer_lr, outer_momentum,
@@ -122,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--population", type=int, default=32)
     parser.add_argument("--draw-chunk", type=int, default=8)
     parser.add_argument("--sigma", type=float, default=1e-2)
+    parser.add_argument("--sigma-mode", choices=("absolute", "relative"), default="absolute")
+    parser.add_argument("--sigma-rel", type=float, default=1e-2)
     parser.add_argument("--gamma", type=float, default=0.9)
     parser.add_argument("--task", choices=("identity", "induction"), default="induction")
     parser.add_argument("--lr", type=float, default=1e-2)
@@ -135,7 +154,8 @@ def main(argv: list[str] | None = None) -> int:
 
     model_cfg = ModelConfig.preset(args.preset)
     cfg = DustConfig(population=args.population, draw_chunk=args.draw_chunk,
-                     sigma=args.sigma, gamma=args.gamma)
+                     sigma=args.sigma, sigma_mode=args.sigma_mode,
+                     sigma_rel=args.sigma_rel, gamma=args.gamma)
     arms = []
     for draws in args.draws:
         if args.mode == "cosine":

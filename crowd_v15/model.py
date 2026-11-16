@@ -55,6 +55,12 @@ class ModelConfig:
             return cls(vocab_size=256, n_layers=4, d_model=128, n_heads=4, context_length=64)
         if name == "10m":
             return cls(vocab_size=4096, n_layers=6, d_model=256, n_heads=8, context_length=512)
+        if name == "300m":
+            # The size the author asked to test convergence on: 18 layers x
+            # 1024 wide is 306,222,080 parameters including the tied embedding,
+            # and a float32 baton is only 1.2 GB on the Hub.
+            return cls(vocab_size=4096, n_layers=18, d_model=1024, n_heads=16,
+                       context_length=2048)
         if name == "100m":
             return cls(vocab_size=4096, n_layers=12, d_model=768, n_heads=12, context_length=1024)
         if name == "1b":
@@ -142,11 +148,25 @@ class Perturb:
     """
 
     enabled: bool = False
-    sigma: float = 0.0
+    sigma: float | dict[str, float] = 0.0
     sign: int = 0
     noise: dict[str, torch.Tensor] = field(default_factory=dict)
     record: dict[str, torch.Tensor] | None = None
     only: str | None = None
+    # When a dict, the clean pass stores each layer's output RMS here so the
+    # noise can be scaled relative to the activation it perturbs. A single
+    # absolute sigma is wrong across widths: at ``10m`` the same 1e-3 is a
+    # different fraction of the signal than at ``1b``, and below the compute
+    # dtype's resolution the perturbation rounds away entirely.
+    scales: dict[str, torch.Tensor] | None = None
+
+
+def layer_sigma(st: Perturb, name: str) -> float:
+    """Absolute noise scale for one layer, from a float or a per-layer dict."""
+    value = st.sigma
+    if isinstance(value, dict):
+        return float(value.get(name, 0.0) or 0.0)
+    return float(value)
 
 
 def _apply_lin(x: torch.Tensor, weight: torch.Tensor, name: str,
@@ -154,14 +174,23 @@ def _apply_lin(x: torch.Tensor, weight: torch.Tensor, name: str,
     if st is not None and st.record is not None:
         st.record[name] = x
     y = x @ weight.t()
-    if st is None or not st.enabled:
+    if st is None:
+        return y
+    if st.scales is not None:
+        # Cheap diagnostic: one scalar per layer per clean pass. Kept on the
+        # device so the caller can resolve a whole dict without a sync per layer.
+        st.scales[name] = y.detach().float().pow(2).mean().sqrt()
+    if not st.enabled:
         return y
     if st.only is not None and st.only != name:
         return y
     noise = st.noise.get(name)
     if noise is None:
         return y
-    return y + st.sign * st.sigma * noise
+    sigma = layer_sigma(st, name)
+    if sigma == 0.0:
+        return y
+    return y + st.sign * sigma * noise
 
 
 class RMSNorm(nn.Module):
@@ -269,8 +298,13 @@ class GPT(nn.Module):
         x = self.tok_emb(idx)
         if st is not None and st.record is not None:
             st.record["tok_emb"] = idx
-        if st is not None and st.enabled and (st.only is None or st.only == "tok_emb"):
-            x = x + st.sign * st.sigma * st.noise["tok_emb"]
+        if st is not None:
+            if st.scales is not None:
+                st.scales["tok_emb"] = x.detach().float().pow(2).mean().sqrt()
+            if st.enabled and (st.only is None or st.only == "tok_emb"):
+                sigma = layer_sigma(st, "tok_emb")
+                if sigma:
+                    x = x + st.sign * sigma * st.noise["tok_emb"]
         for i, block in enumerate(self.blocks):
             x = block(x, mask, st, f"blocks.{i}")
         h = self.norm_f(x)

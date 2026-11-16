@@ -34,6 +34,11 @@ class DustConfig:
     population: int = 64      # antithetic draws per step
     draw_chunk: int = 8       # draws evaluated per batched pass
     sigma: float = 1e-3
+    # "relative" scales the noise per layer as ``sigma_rel * rms(y_l)``, which is
+    # what keeps the perturbation above the compute dtype's resolution as width
+    # grows. "absolute" keeps the historical single sigma.
+    sigma_mode: str = "absolute"
+    sigma_rel: float = 0.01
     gamma: float = 0.98
     lr: float = 1e-3
     momentum: float = 0.0
@@ -46,6 +51,10 @@ class DustConfig:
             raise ValueError("population must be positive")
         if self.sigma <= 0:
             raise ValueError("sigma must be positive")
+        if self.sigma_mode not in ("absolute", "relative"):
+            raise ValueError('sigma_mode must be "absolute" or "relative"')
+        if self.sigma_rel <= 0:
+            raise ValueError("sigma_rel must be positive")
         if not 0.0 <= self.gamma <= 1.0:
             raise ValueError("gamma must be in [0, 1]")
         if self.draw_chunk <= 0:
@@ -172,7 +181,17 @@ def dust_gradients(model: GPT, cfg: DustConfig, idx: torch.Tensor, tgt: torch.Te
             tgt_rep = tgt.repeat(rows, 1).contiguous()
 
             record: dict[str, torch.Tensor] = {}
-            clean_logits = model(idx_rep, Perturb(record=record))
+            layer_scales: dict[str, torch.Tensor] = {}
+            clean_logits = model(idx_rep, Perturb(record=record, scales=layer_scales))
+
+            relative = cfg.sigma_mode == "relative"
+            if relative:
+                sigma_map = {name: cfg.sigma_rel * float(value)
+                             for name, value in layer_scales.items()}
+                sigmas = {name: value for name, value in sigma_map.items()}
+            else:
+                sigma_map = cfg.sigma
+                sigmas = {}
 
             # The head is linear in its input, so its gradient is exact.
             hidden = record["__head__"].reshape(-1, hidden_dim).float()
@@ -181,18 +200,23 @@ def dust_gradients(model: GPT, cfg: DustConfig, idx: torch.Tensor, tgt: torch.Te
                   tgt_rep.reshape(-1)] -= 1.0
             head_grad += (probs.t() @ hidden) / total_tokens
 
-            scale = cfg.sigma * total_tokens
+            default_scale = cfg.sigma * total_tokens
             for _label, only, targets in per_pass:
                 noise = draw_noise(targets, rows=b, seq_len=t, base_seed=base_seed,
                                    step=step, draws=draws, device=device, dtype=dtype)
-                plus = model(idx_rep, Perturb(enabled=True, sigma=cfg.sigma, sign=1,
+                plus = model(idx_rep, Perturb(enabled=True, sigma=sigma_map, sign=1,
                                               noise=noise, only=only))
-                minus = model(idx_rep, Perturb(enabled=True, sigma=cfg.sigma, sign=-1,
-                                               noise=noise, only=only))
+                minus = model(idx_rep, Perturb(enabled=True, sigma=sigma_map, sign=-1,
+                                                noise=noise, only=only))
                 delta = 0.5 * (per_token_ce(plus, tgt_rep) - per_token_ce(minus, tgt_rep))
                 reward = reverse_discounted_cumsum(delta, cfg.gamma).reshape(-1, 1).float()
 
                 for name, width in targets.items():
+                    # Each layer is divided by the sigma that produced its own
+                    # noise, otherwise a relative scale would bias wide layers.
+                    scale = (sigmas[name] * total_tokens) if relative else default_scale
+                    if scale <= 0.0:
+                        continue
                     weighted = noise[name].reshape(-1, width).float() * reward
                     key = f"{name}.weight"
                     if name == "tok_emb":
@@ -211,7 +235,10 @@ def dust_gradients(model: GPT, cfg: DustConfig, idx: torch.Tensor, tgt: torch.Te
         "draws": cfg.population,
         "tokens": total_tokens,
         "forwards": math.ceil(cfg.population / cfg.draw_chunk) * (1 + 2 * len(per_pass)),
-        "sigma": cfg.sigma,
+        "sigma": (min(sigmas.values()) if sigmas else cfg.sigma),
+        "sigmaMode": cfg.sigma_mode,
+        "sigmaRel": cfg.sigma_rel if sigmas else None,
+        "sigmaMax": (max(sigmas.values()) if sigmas else cfg.sigma),
         "gamma": cfg.gamma,
         "gradNorm": float(math.sqrt(sum(float(g.pow(2).sum()) for g in grads.values()))),
     }
