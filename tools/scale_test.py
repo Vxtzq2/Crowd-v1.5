@@ -215,6 +215,10 @@ def main(argv: list[str] | None = None) -> int:
 
     tokens_per_step = args.batch * args.seq_len
     started = time.perf_counter()
+    # A resumed run must report this session's throughput, not every token the
+    # checkpoint has ever seen (that divided 65,536 inherited tokens by 179 s and
+    # published 388 tok/s for a 23 tok/s machine).
+    session_start_tokens = tokens_seen
     next_eval = max(args.eval_every, tokens_seen + args.eval_every)
     next_ckpt = time.perf_counter() + args.ckpt_seconds
     recent: list[float] = []
@@ -310,7 +314,8 @@ def main(argv: list[str] | None = None) -> int:
                 "trainLossInstant": round(float(loss), 6) if loss is not None else None,
                 "bestEvalLoss": round(best, 6),
                 "seconds": round(time.perf_counter() - started, 1),
-                "tokensPerSecond": round(tokens_seen / max(1e-9, time.perf_counter() - started), 1),
+                "tokensPerSecond": round((tokens_seen - session_start_tokens) / max(1e-9, time.perf_counter() - started), 1),
+                "sessionTokens": tokens_seen - session_start_tokens,
                 "peakVramGb": peak_memory_gb(device),
                 "uploadBytes": upload_bytes or None,
                 **extra,
@@ -325,7 +330,8 @@ def main(argv: list[str] | None = None) -> int:
                 "trainLoss": round(sum(recent) / len(recent), 6),
                 "trainLossInstant": round(float(loss), 6) if loss is not None else None,
                 "seconds": round(time.perf_counter() - started, 1),
-                "tokensPerSecond": round(tokens_seen / max(1e-9, time.perf_counter() - started), 1),
+                "tokensPerSecond": round((tokens_seen - session_start_tokens) / max(1e-9, time.perf_counter() - started), 1),
+                "sessionTokens": tokens_seen - session_start_tokens,
                 "peakVramGb": peak_memory_gb(device),
                 "stepSeconds": round(seconds, 3),
                 "uploadBytes": upload_bytes or None,
