@@ -168,3 +168,23 @@ def test_300m_preset_is_the_parameter_budget_the_author_asked_for():
     assert 2.9e8 < cfg.n_params < 3.2e8
     # The published seed doc must agree with the preset count.
     assert cfg.n_params == 306_222_080
+
+
+def test_pull_reads_anonymously(tmp_path, monkeypatch):
+    """A public repo must be pullable without a token; only push needs one."""
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    assert BATON._optional_token("HF_TOKEN") is None
+    calls = {}
+
+    def fake_download(repo, name, dest, *, revision, token_env="HF_TOKEN"):
+        calls[name] = BATON._optional_token(token_env)
+        source = tmp_path / "src"
+        source.mkdir(exist_ok=True)
+        return None
+
+    monkeypatch.setattr(BATON, "hub_download", fake_download)
+    with pytest.raises(BATON.BatonError, match="missing"):
+        BATON.cmd_pull(BATON.parse_args(["pull", "--dir", str(tmp_path / "state")]))
+    assert set(calls) == set(BATON.FILES)
+    assert all(value is None for value in calls.values())

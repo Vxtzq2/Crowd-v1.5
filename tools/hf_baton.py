@@ -74,6 +74,11 @@ def _token(token_env: str) -> str | None:
     return value
 
 
+def _optional_token(token_env: str) -> str | None:
+    """Reads are allowed anonymously; a token only raises the rate limit."""
+    return os.environ.get(token_env) or os.environ.get("HUGGING_FACE_HUB_TOKEN") or None
+
+
 def hub_download(repo: str, name: str, dest: Path, *, revision: str | None,
                  token_env: str = "HF_TOKEN") -> Path | None:
     from huggingface_hub import hf_hub_download
@@ -81,7 +86,8 @@ def hub_download(repo: str, name: str, dest: Path, *, revision: str | None,
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        path = hf_hub_download(repo, name, revision=revision, token=_token(token_env),
+        path = hf_hub_download(repo, name, revision=revision,
+                               token=_optional_token(token_env),
                                local_dir=str(dest.parent))
     except EntryNotFoundError:
         return None
