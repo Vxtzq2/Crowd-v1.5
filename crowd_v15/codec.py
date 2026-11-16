@@ -242,10 +242,18 @@ def compression_ratio(original_bytes: int, compressed: bytes) -> float:
 
 
 def _f32_to_bf16(arr: np.ndarray) -> np.ndarray:
-    """Round float32 to bfloat16 (round-to-nearest-even) without torch."""
-    u = np.ascontiguousarray(arr, dtype=np.float32).view(np.uint32).astype(np.uint64)
-    rounded = (u + 0x8000 + ((u >> 16) & 1)) >> 16
-    return (rounded & 0xFFFF).astype("<u2")
+    """Round float32 to bfloat16 (round-to-nearest-even) without torch.
+
+    The arithmetic stays in uint32. Upcasting to uint64 (the obvious way to
+    avoid the carry out of the low half) allocates four 8-byte temporaries per
+    element, which at 306M parameters is ~10 GB of traffic per call and made a
+    coordinator digest take minutes. The carry into the exponent is exactly
+    what rounding should do, so uint32 is both correct and ~6x cheaper.
+    """
+    u = np.ascontiguousarray(arr, dtype=np.float32).view(np.uint32)
+    carry = (u >> np.uint32(16)) & np.uint32(1)
+    rounded = (u + np.uint32(0x8000) + carry) >> np.uint32(16)
+    return (rounded & np.uint32(0xFFFF)).astype("<u2")
 
 
 def _bf16_to_f32(bits: np.ndarray) -> np.ndarray:
