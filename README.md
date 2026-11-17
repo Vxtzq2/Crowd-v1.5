@@ -1,10 +1,11 @@
-# Crowd-v1.5
+# Crowd-v1.1
+**Experimental Fork of CrowdGPT - https://github.com/Vxtzq/CrowdGPT**
 
-Pretraining by **DUST** — perturbing activations instead of backpropagating — with
+Pretraining by **DUST** - perturbing activations instead of backpropagating - with
 a coordinator that accepts DUST and backprop submissions on **separate routes**.
 
-This is the ground work for the v1.5 pivot: v1 trained a 658M+350M model with
-backprop and shipped dense weight deltas. v1.5 trains a **1B plain transformer**
+This is the ground work for the v2 pivot: v1 trained a 200 million parameters model with
+backprop and shipped dense weight deltas. v1.1 trains a **200m plain transformer**
 and lets any device contribute, because DUST needs no backward pass, no optimizer
 state and no gradient buffer. Backprop stays in the tree as a route that is simply
 unused when DUST is active.
@@ -15,12 +16,9 @@ The model is a plain decoder-only transformer: embeddings, pre-norm blocks
 (RMSNorm, fused-QKV attention, SwiGLU MLP), a final norm and a tied output head.
 Nothing else -- **no engram table, no MoE, no adapters, no LoRA**.
 
-That is a requirement, not a preference. The v1 engram was a 350M-row lookup table
-trained by `SparseAdam` over visited rows. A DUST step estimates one scalar reward
-per population member and turns it into a weight-shaped direction; applying that
-to rows the forward pass never touched is meaningless, and the damage would not
-show up in the loss until much later. So a sparse component with its own update
-rule is not something to tune around -- it is something to remove.
+Engrams are removed due to incompatibilites (for now) with Evolution Strategies (ES)
+
+## What changes
 
 The rule is enforced in code, in three places:
 
@@ -35,6 +33,7 @@ The rule is enforced in code, in three places:
 | `tiny` | 4 | 128 | 4 | 64 | 1,082,496 |
 | `10m` | 6 | 256 | 8 | 512 | 7,343,360 |
 | `100m` | 12 | 768 | 12 | 1024 | 116,411,136 |
+| **`200m`** | **16** | **1024** | **16** | **1024** | **200,000,000 (to verify)** |
 | **`1b`** | **15** | **2048** | **16** | **2048** | **1,015,085,056** |
 | `1b-deep` | 20 | 2048 | 16 | 2048 | 1,350,649,856 |
 | `2b` | 32 | 2304 | 18 | 2048 | 2,727,495,936 |
