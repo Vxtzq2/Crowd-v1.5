@@ -38,7 +38,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from . import codec, protocol
+from . import accel, codec, protocol
 from .dust import DustConfig, DustOptimizer, dust_gradients, probe_cosine
 from .feedback import ErrorFeedback
 from .model import GPT, ModelConfig, canonical_params
@@ -115,7 +115,7 @@ class DustClient:
     def __init__(self, config: ClientConfig):
         config.check()
         self.config = config
-        self.device = torch.device(config.device)
+        self.device = accel.resolve_device(config.device)
         self.model_cfg = ModelConfig.preset(config.preset)
         if config.seq_len > self.model_cfg.context_length:
             raise ValueError(
@@ -345,7 +345,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--momentum", type=float, default=0.0)
     p.add_argument("--grad-clip", type=float, default=0.0)
     p.add_argument("--codec", default="ngd1r")
-    p.add_argument("--device", default="cpu")
+    p.add_argument("--device", default="cpu", help="cpu, cuda (incl. ROCm), mps or auto")
     p.add_argument("--compute-dtype", default="float32")
     p.add_argument("--local-steps", type=int, default=1)
     p.add_argument("--seed", type=int, default=0)

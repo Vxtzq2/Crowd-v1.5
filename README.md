@@ -78,6 +78,7 @@ crowd_v15/
   coordinator.py  who counts, how they combine, when the model moves
   server/app.py   POST /submit/dust, POST /submit/backprop, model + status reads
   client.py       a DUST client: verify weights, train, upload, re-sync
+  accel.py        device selection + per-backend sync/memory/autocast (CUDA, ROCm, MPS, CPU)
 tests/            89 tests, ~15 s on CPU
 ```
 
@@ -96,10 +97,15 @@ python -m uvicorn --factory crowd_v15.server.app:create_app --port 8000
 curl -X POST http://127.0.0.1:8000/admin/bootstrap \
      -H "X-Admin-Secret: change-me" --data-binary @weights.safetensors
 
-# a client (CPU is fine)
+# a client (CPU is fine; add --device mps on a Mac, or --device auto)
 python -m crowd_v15.client --server http://127.0.0.1:8000 \
        --preset tiny --task identity --rounds 2 --population 32
 ```
+
+On macOS the system `python3` is 3.9 and this needs >= 3.10:
+`uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -e '.[dev]'`.
+Apple silicon runs on MPS (`--device mps`); `tests/test_mps.py` checks the MPS
+estimate against CPU and skips elsewhere.
 
 `--dry-run` trains and reports without uploading, which is how you check a port
 before spending bandwidth.
