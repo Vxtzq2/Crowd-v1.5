@@ -39,6 +39,15 @@ class DustConfig:
     # grows. "absolute" keeps the historical single sigma.
     sigma_mode: str = "absolute"
     sigma_rel: float = 0.01
+    # Upper bound on the per-layer noise scale in "relative" mode. Relative
+    # scaling tracks ``RMS(layer output)``, and that reference is not stationary:
+    # over 5.2 M tokens of the 24 h 300M arm the per-layer maximum grew 0.032 ->
+    # 6.66 (x207) while total weight RMS grew x1.18, so the estimator finished in
+    # a far coarser perturbation regime than it started in. ``None`` keeps the
+    # historical unclamped behaviour; a value pins the perturbation to a known
+    # magnitude so a long run cannot silently walk out of the regime it was
+    # tuned for. See TODO G37/G38.
+    sigma_max: float | None = None
     gamma: float = 0.98
     lr: float = 1e-3
     momentum: float = 0.0
@@ -63,6 +72,8 @@ class DustConfig:
             raise ValueError('sigma_mode must be "absolute" or "relative"')
         if self.sigma_rel <= 0:
             raise ValueError("sigma_rel must be positive")
+        if self.sigma_max is not None and self.sigma_max <= 0:
+            raise ValueError("sigma_max must be positive when set")
         if not 0.0 <= self.gamma <= 1.0:
             raise ValueError("gamma must be in [0, 1]")
         if self.draw_chunk <= 0:
@@ -205,6 +216,9 @@ def dust_gradients(model: GPT, cfg: DustConfig, idx: torch.Tensor, tgt: torch.Te
             if relative:
                 sigma_map = {name: cfg.sigma_rel * float(value)
                              for name, value in layer_scales.items()}
+                if cfg.sigma_max is not None:
+                    sigma_map = {name: min(value, cfg.sigma_max)
+                                 for name, value in sigma_map.items()}
                 sigmas = {name: value for name, value in sigma_map.items()}
             else:
                 sigma_map = cfg.sigma
@@ -258,6 +272,9 @@ def dust_gradients(model: GPT, cfg: DustConfig, idx: torch.Tensor, tgt: torch.Te
         "sigmaMode": cfg.sigma_mode,
         "sigmaRel": cfg.sigma_rel if sigmas else None,
         "sigmaMax": (max(sigmas.values()) if sigmas else cfg.sigma),
+        "sigmaCap": cfg.sigma_max,
+        "sigmaClamped": (sum(1 for value in sigmas.values() if value >= cfg.sigma_max)
+                         if (sigmas and cfg.sigma_max is not None) else 0),
         "gamma": cfg.gamma,
         "gradNorm": float(math.sqrt(sum(float(g.pow(2).sum()) for g in grads.values()))),
     }

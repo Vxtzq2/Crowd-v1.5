@@ -102,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sigma", type=float, default=1e-2)
     parser.add_argument("--sigma-mode", choices=("absolute", "relative"), default="relative")
     parser.add_argument("--sigma-rel", type=float, default=0.05)
+    parser.add_argument("--sigma-max", type=float, default=0.0,
+                        help="clamp the per-layer relative sigma to at most this value (0 = unclamped)")
     parser.add_argument("--gamma", type=float, default=0.9)
     parser.add_argument("--mode", choices=("layer", "all"), default="layer")
     parser.add_argument("--noise-device", choices=("cpu", "device"), default="cpu",
@@ -179,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         dust_cfg = DustConfig(population=args.population, draw_chunk=args.draw_chunk,
                               sigma=args.sigma, sigma_mode=args.sigma_mode,
                               sigma_rel=args.sigma_rel, gamma=args.gamma, mode=args.mode,
+                              sigma_max=(args.sigma_max or None),
                               noise_device=args.noise_device)
     else:
         optimizer = torch.optim.AdamW(list(params.values()), lr=args.adam_lr,
@@ -200,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         "sigma": args.sigma if args.arm == "dust" else None,
         "sigmaMode": args.sigma_mode if args.arm == "dust" else None,
         "sigmaRel": args.sigma_rel if args.arm == "dust" else None,
+        "sigmaMax": (args.sigma_max or None) if args.arm == "dust" else None,
         "gamma": args.gamma if args.arm == "dust" else None,
         "mode": args.mode if args.arm == "dust" else None,
         "lr": args.lr if args.arm == "dust" else args.adam_lr,
