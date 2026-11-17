@@ -323,6 +323,53 @@ literal-1B DUST step fits in **6.5 GB**, leaving ~9 GB of the card for a bigger
 population or longer sequences. The same shapes run 3.9x faster on CUDA than on
 the 8-CU APU, which is the first hardware-class comparison of this method we have.
 
+## Measured on Apple silicon (1B, MPS)
+
+Same `1b` preset on an Apple M5 Max (48 GB unified memory), macOS 26, torch
+2.15.0, `--device mps`. Reproduce with:
+
+```bash
+uv venv --python 3.12 .venv            # system python3 on macOS is 3.9; need >= 3.10
+uv pip install --python .venv/bin/python -e '.[dev]'
+.venv/bin/python tools/bench_device.py --preset 1b --device mps --repeat 3
+```
+
+| measurement | M5 Max (MPS) |
+|---|---|
+| weights at bf16 | 1.89 GB |
+| forward, seq 8 (warm, median of 3) | 0.006 s, 2.01 GB driver-allocated |
+| DUST step, seq 32, bs 1, population 2 | **1.31 s** (noise on CPU) / **1.16 s** (noise on device), 153 forwards |
+| evidence throughput | **48.9 tok/s** (116.9 forwards/s) / 55.2 tok/s (132.0 forwards/s) |
+| fp32 gradient buffer for the whole model | 3.78 GB |
+
+Caveats: torch has no peak-memory counter for MPS, so `tools/bench_device.py`
+reports `torch.mps.driver_allocated_memory()` (includes the allocator cache;
+~10 GB after warmup + 3 steps), which is not comparable to CUDA's peak
+reserved. The forward time is a warm median; the CUDA/ROCm rows above appear to
+include first-call cost. In fp32 with CPU-drawn noise the MPS estimate matches
+CPU to cosine 1.000 (`tests/test_mps.py`); bf16 differs from fp32 by rounding
+on every backend.
+
+`crowd_v15/accel.py` picks the device (`auto` = CUDA/ROCm, then MPS, then CPU)
+and wraps synchronize / memory / autocast per backend; the client takes
+`--device mps` or `--device auto`.
+
+End to end over HTTP on the same machine (uvicorn coordinator, two concurrent
+clients per round, `10m` preset, induction, seq 64, batch 4, population 32,
+draw-chunk 8, NGD1R uploads, 6 rounds):
+
+| | MPS (bf16) | CPU (fp32) |
+|---|---|---|
+| client step | ~2.1 s | ~13.1 s |
+| evidence per client | ~4,000 tok/s | ~625 tok/s |
+| round wall time | ~3.1 s | ~13.9 s |
+| upload per submission | 1.70 MB (dense would be 14.69 MB) | same |
+
+That run uses the coordinator's default `lr=1e-3` with no outer optimizer, so
+it measures plumbing and throughput, not learning. With `lr=0.05`,
+`outer_lr=0.7`, momentum 0.9, `tiny` identity goes 4.84 -> 2.76 held-out loss in
+30 rounds: 6.6 s on MPS vs 259 s on CPU.
+
 ## How a round scales submissions
 
 The absolute scale of an ES estimate is an artefact of `sigma` and the token
