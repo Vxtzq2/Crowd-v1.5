@@ -146,6 +146,20 @@ def build(runs: Path, param_count: int) -> str:
         "thousands of tokens per parameter at best, i.e. this is a throughput "
         "measurement, not a convergence claim.",
         "",
+        "## One caveat this run surfaced",
+        "",
+        "`--sigma-mode relative` scales each layer's noise to `sigma_rel x RMS(layer "
+        "output)`, and that reference is not stationary. Over the first 5.2 M tokens "
+        "of the 4060 Ti arm the per-layer maximum grew 0.032 -> 6.66 (x207) while "
+        "total weight RMS grew only x1.18, i.e. the drift is activation-RMS growth, "
+        "not weight growth. The estimator therefore finishes the run in a much "
+        "coarser perturbation regime than it started in, and held-out loss has been "
+        "flat (6.74-6.78) across the last six evals spanning 1 M tokens while train "
+        "loss kept falling. Read the late, flat part of the curve as \"the estimator "
+        "under an unbounded noise scale\" rather than as a converged model; the fix "
+        "(clamping or scheduling `sigma_rel`) is TODO G38, and the two hypotheses "
+        "the run cannot separate are noise-scale drift and simply too few tokens.",
+        "",
     ]
     return "\n".join(out + notes)
 
