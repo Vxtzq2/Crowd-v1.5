@@ -34,7 +34,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from crowd_v15 import protocol  # noqa: E402
+from crowd_v15 import accel, protocol  # noqa: E402
 from crowd_v15.coordinator import CoordConfig, Coordinator, Rejected  # noqa: E402
 from crowd_v15.dust import DustConfig, dust_gradients  # noqa: E402
 from crowd_v15.model import GPT, ModelConfig, canonical_params  # noqa: E402
@@ -79,9 +79,7 @@ def eval_loss(model, path: str, *, seq_len: int, windows: int, batch: int = 8) -
 
 
 def peak_memory_gb(device) -> float | None:
-    if device.type != "cuda":
-        return None
-    return round(torch.cuda.max_memory_reserved(device) / 1024 ** 3, 3)
+    return accel.peak_memory_gb(device)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -90,7 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preset", default="10m")
     parser.add_argument("--data", default="/tmp/v15data/tok")
     parser.add_argument("--out", default="runs/scale")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", default=accel.default_device(),
+                        help="cuda (incl. ROCm), mps, cpu or auto")
     parser.add_argument("--compute-dtype", default="bfloat16")
     parser.add_argument("--seq-len", type=int, default=512)
     parser.add_argument("--batch", type=int, default=4)
@@ -120,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--warmup-steps", type=int, default=20)
     args = parser.parse_args(argv)
 
-    device = torch.device(args.device)
+    device = accel.resolve_device(args.device)
     dtype = _DTYPES[args.compute_dtype]
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -208,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         "codec": args.codec if args.arm == "dust" else None,
         "seed": args.seed, "startedAt": time.time(), "resumed": resumed,
         "torch": torch.__version__,
-        "gpu": torch.cuda.get_device_name(0) if device.type == "cuda" else None,
+        "gpu": accel.device_name(device),
     }
     meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
     print(json.dumps(meta, sort_keys=True), flush=True)
@@ -284,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             warm = min(1.0, (step + 1) / max(1, args.warmup_steps))
             for group in optimizer.param_groups:
                 group["lr"] = args.adam_lr * warm
-            with torch.autocast("cuda", dtype=torch.bfloat16) if device.type == "cuda" else torch.autocast("cpu", enabled=False):
+            with accel.autocast(device):
                 logits = model(idx)
                 loss = torch.nn.functional.cross_entropy(
                     logits.reshape(-1, logits.shape[-1]).float(), tgt.reshape(-1))

@@ -42,6 +42,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from crowd_v15 import accel  # noqa: E402
 from crowd_v15.dust import DustConfig, dust_gradients, DustOptimizer  # noqa: E402
 from crowd_v15.model import GPT, ModelConfig, canonical_params, param_report  # noqa: E402
 from crowd_v15.store import weights_digest  # noqa: E402
@@ -356,7 +357,7 @@ def cmd_train(args: argparse.Namespace) -> int:
     if not preset:
         raise BatonError("no preset in seed.json; pass --preset")
     cfg = ModelConfig.preset(preset)
-    device = torch.device(args.device)
+    device = accel.resolve_device(args.device)
     dtype = DTYPES[args.compute_dtype]
     tensors = load_weights(directory)
     if int(sum(int(np.asarray(v).size) for v in tensors.values())) != cfg.n_params:
@@ -398,8 +399,7 @@ def cmd_train(args: argparse.Namespace) -> int:
                               "sigma": round(float(stats["sigma"]), 6),
                               "seconds": round(time.perf_counter() - started, 1),
                               "tokensPerSecond": round(tokens_seen / max(1e-9, time.perf_counter() - started), 1),
-                              "vramGb": (round(torch.cuda.max_memory_reserved(device) / 1024**3, 3)
-                                         if device.type == "cuda" else None)}), flush=True)
+                              "vramGb": accel.peak_memory_gb(device)}), flush=True)
 
     save_weights(directory, model_tensors(model))
     digest = weights_digest(load_weights(directory))
@@ -456,7 +456,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train.add_argument("--dir", required=True)
     train.add_argument("--preset", default="")
     train.add_argument("--data", default="/tmp/v15data/tok")
-    train.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    train.add_argument("--device", default=accel.default_device(),
+                       help="cuda (incl. ROCm), mps, cpu or auto")
     train.add_argument("--compute-dtype", default="bfloat16", choices=tuple(DTYPES))
     train.add_argument("--steps", type=int, default=20)
     train.add_argument("--minutes", type=float, default=0.0)
